@@ -77,7 +77,6 @@ class LocalConfig:
         
         # Optional polling settings
         config['poll_interval'] = int(os.getenv('POLL_INTERVAL', '60'))
-        config['search_days'] = int(os.getenv('SEARCH_DAYS', '7'))
         
         # Optional logging and storage settings
         config['log_level'] = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -127,9 +126,7 @@ class LocalConfig:
         if self.config['poll_interval'] < 10:
             self.logger.warning("Poll interval is very low (<10 seconds). This may cause rate limiting.")
         
-        if self.config['search_days'] > 30:
-            self.logger.warning("Search days is very high (>30 days). This may slow down email searches.")
-        
+
         if self.config['auto_shutdown_hours'] < 0:
             self.logger.warning("Auto-shutdown hours is negative. Auto-shutdown will be disabled.")
         elif self.config['auto_shutdown_hours'] > 0 and self.config['auto_shutdown_hours'] < 0.5:

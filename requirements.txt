@@ -1,21 +1,20 @@
-# Local Gmail Order Processor Requirements
-# These are the dependencies needed to run the local version
+# Gmail Order Processor Requirements (OAuth Version)
+# Dependencies needed for the OAuth-based local version
 
-# Core dependencies from the deployment version
+# Core dependencies
 requests>=2.31.0
 python-dotenv>=1.0.0
+pytz>=2023.3
 
-# Email processing - IMAP support is built into Python's standard library
-# No additional dependencies needed for imaplib
-
-# Existing dependencies that we reuse
-# (These should already be available if you have the deployment version working)
-# - order_processor.py uses: dataclasses, typing, logging, re, datetime (all built-in)
-# - inflow_api.py uses: requests (already listed above), uuid, logging, time, random (all built-in or listed)
+# Gmail API OAuth 2.0 dependencies
+google-auth>=2.17.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.88.0
 
 # Optional: Enhanced logging and monitoring
 coloredlogs>=15.0
 
-# Development and testing
+# Development and testing (optional)
 pytest>=7.0.0
 pytest-cov>=4.0.0
