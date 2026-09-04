@@ -76,6 +76,17 @@ class InflowAPI:
             'timeouts': 0,   # Track timeout errors
             'dns_errors': 0  # Track DNS resolution errors
         }
+        
+        # API Response Caching - Cache successful lookups to prevent redundant calls
+        self._cache = {
+            'products': {},  # SKU -> product data
+            'customers': {},  # name -> customer data
+            'cache_timeout': 3600  # Cache entries expire after 1 hour
+        }
+        self._cache_timestamps = {
+            'products': {},  # SKU -> timestamp
+            'customers': {}  # name -> timestamp
+        }
 
     def _track_api_call(self, call_type: str, identifier: str = None):
         """Track API call patterns for analysis."""
@@ -86,6 +97,36 @@ class InflowAPI:
             self._api_calls[call_type][identifier] = self._api_calls[call_type].get(identifier, 0) + 1
             if self._api_calls[call_type][identifier] > 1:
                 self.logger.warning(f"Redundant {call_type} API call for {identifier} (Count: {self._api_calls[call_type][identifier]})")
+                
+    def _is_cache_valid(self, cache_type: str, key: str) -> bool:
+        """Check if cache entry is still valid (not expired)."""
+        if key not in self._cache_timestamps.get(cache_type, {}):
+            return False
+        
+        cache_time = self._cache_timestamps[cache_type][key]
+        current_time = time.time()
+        return (current_time - cache_time) < self._cache['cache_timeout']
+    
+    def _get_from_cache(self, cache_type: str, key: str) -> Optional[Dict[str, Any]]:
+        """Get data from cache if valid."""
+        if self._is_cache_valid(cache_type, key):
+            self.logger.info(f"🚀 Cache HIT for {cache_type}: {key} (API call avoided!)")
+            return self._cache[cache_type][key]
+        elif key in self._cache[cache_type]:
+            # Remove expired cache entry
+            del self._cache[cache_type][key]
+            del self._cache_timestamps[cache_type][key]
+            self.logger.debug(f"Cache expired for {cache_type}: {key}")
+        return None
+    
+    def _store_in_cache(self, cache_type: str, key: str, data: Dict[str, Any]):
+        """Store data in cache with timestamp."""
+        self._cache[cache_type][key] = data
+        self._cache_timestamps[cache_type][key] = time.time()
+        if data is not None:
+            self.logger.info(f"💾 Cached {cache_type}: {key} (future lookups will be instant)")
+        else:
+            self.logger.debug(f"Cached negative result for {cache_type}: {key}")
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """Make an HTTP request with detailed network diagnostics and rate limit handling."""
@@ -161,11 +202,32 @@ class InflowAPI:
         self.logger.info(f"Timeout errors: {self._api_calls['timeouts']}")
         self.logger.info(f"DNS errors: {self._api_calls['dns_errors']}")
         
+        # Log cache effectiveness  
+        products_cached = len(self._cache['products'])
+        customers_cached = len(self._cache['customers'])
+        self.logger.info(f"📊 Cache Summary:")
+        self.logger.info(f"  • Cached products: {products_cached}")
+        self.logger.info(f"  • Cached customers: {customers_cached}")
+        
+        # Calculate potential API calls saved
+        total_product_lookups = sum(self._api_calls.get('products', {}).values())
+        total_customer_lookups = sum(self._api_calls.get('customers', {}).values())
+        estimated_api_calls_saved = (total_product_lookups - products_cached) + (total_customer_lookups - customers_cached)
+        if estimated_api_calls_saved > 0:
+            self.logger.info(f"  • Estimated API calls saved by caching: {estimated_api_calls_saved}")
+            savings_percentage = (estimated_api_calls_saved / (total_product_lookups + total_customer_lookups)) * 100 if (total_product_lookups + total_customer_lookups) > 0 else 0
+            self.logger.info(f"  • Cache efficiency: {savings_percentage:.1f}% reduction in API calls")
+        
         # Log duplicate calls that might indicate inefficient patterns
         if 'customers' in self._api_calls:
             duplicate_customers = {name: count for name, count in self._api_calls['customers'].items() if count > 1}
             if duplicate_customers:
                 self.logger.warning(f"Duplicate customer lookups: {duplicate_customers}")
+        
+        if 'products' in self._api_calls:
+            duplicate_products = {sku: count for sku, count in self._api_calls['products'].items() if count > 1}
+            if duplicate_products:
+                self.logger.warning(f"Duplicate product lookups: {duplicate_products}")
 
     def get_customers(self) -> Optional[Dict[str, Any]]:
         """Get list of customers from inFlow.
@@ -375,6 +437,13 @@ class InflowAPI:
     def find_customer_by_name(self, name: str, exact_match: bool = False) -> Optional[Dict[str, Any]]:
         """Find a customer by name, optionally requiring an exact match."""
         self.logger.debug(f"Searching for customer: {name} (exact_match={exact_match})")
+        
+        # Check cache first
+        cache_key = f"{name}|{exact_match}"
+        cached_result = self._get_from_cache('customers', cache_key)
+        if cached_result is not None:
+            return cached_result
+        
         self._track_api_call('customers', name)
         
         # First try exact match
@@ -403,6 +472,8 @@ class InflowAPI:
                 # Only return if it's a true exact match (case-insensitive)
                 if customer_name.lower() == name.lower():
                     self.logger.info(f"Found exact match: {customer_name}")
+                    # Cache the successful result
+                    self._store_in_cache('customers', cache_key, customer_data)
                     return customer_data
                 else:
                     self.logger.debug(f"Found close match but not exact: {customer_name}")
@@ -414,6 +485,8 @@ class InflowAPI:
         
         if exact_match:
             self.logger.debug(f"No exact match found for: {name}")
+            # Cache the negative result to avoid repeated lookups
+            self._store_in_cache('customers', cache_key, None)
             return None
             
         # Try smart search if exact match fails
@@ -458,14 +531,20 @@ class InflowAPI:
                 if scored_matches and scored_matches[0][0] > 0.5:
                     best_match = scored_matches[0][1]
                     self.logger.info(f"Found best match: {best_match.get('name')} (score: {scored_matches[0][0]:.2f})")
+                    # Cache the successful result
+                    self._store_in_cache('customers', cache_key, best_match)
                     return best_match
                 else:
                     self.logger.debug("No matches with sufficient relevance score")
+                    # Cache the negative result
+                    self._store_in_cache('customers', cache_key, None)
                     
         except Exception as e:
             self.logger.error(f"Error during smart search: {str(e)}")
             
         self.logger.debug(f"No matches found after searching {len(matches) if 'matches' in locals() else 0} customers")
+        # Cache the negative result
+        self._store_in_cache('customers', cache_key, None)
         return None
 
     def find_product_by_sku(self, sku: str) -> Optional[Dict[str, Any]]:
@@ -483,6 +562,11 @@ class InflowAPI:
             GET /{companyId}/products?filter[smart]={sku}
         """
         try:
+            # Check cache first
+            cached_result = self._get_from_cache('products', sku)
+            if cached_result is not None:
+                return cached_result
+            
             self._track_api_call('products', sku)
             self.logger.info(f"Searching for product with SKU: {sku}")
             
@@ -513,9 +597,13 @@ class InflowAPI:
                     product_id = product.get('productId')
                     product_link = f"https://app.inflowinventory.com/products/{product_id}"
                     self.logger.info(f"Found product: {product.get('name')} (SKU: {sku}) - View in inFlow: {product_link}")
+                    # Cache the successful result
+                    self._store_in_cache('products', sku, product)
                     return product
             
             self.logger.warning(f"No exact SKU match found for: {sku}")
+            # Cache the negative result to avoid repeated lookups
+            self._store_in_cache('products', sku, None)
             return None
             
         except requests.exceptions.RequestException as e:
@@ -611,3 +699,104 @@ class InflowAPI:
         
         self.logger.info("No customer found using either shipping or billing names")
         return None
+    
+    def find_products_by_skus_batch(self, skus: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:
+        """Find multiple products by SKUs in an optimized batch operation.
+        
+        This method reduces API calls by using smart search with multiple SKUs
+        and then mapping the results back to individual SKUs.
+        
+        Args:
+            skus (List[str]): List of SKUs to find
+        
+        Returns:
+            Dict[str, Optional[Dict[str, Any]]]: Dictionary mapping SKU to product data
+        """
+        if not skus:
+            return {}
+        
+        self.logger.debug(f"Batch lookup for {len(skus)} SKUs: {skus}")
+        
+        # Check cache first for all SKUs
+        results = {}
+        skus_to_fetch = []
+        
+        for sku in skus:
+            cached_result = self._get_from_cache('products', sku)
+            if cached_result is not None:
+                results[sku] = cached_result
+            else:
+                skus_to_fetch.append(sku)
+        
+        if not skus_to_fetch:
+            self.logger.debug(f"All {len(skus)} products found in cache")
+            return results
+        
+        self.logger.debug(f"Need to fetch {len(skus_to_fetch)} products from API")
+        
+        try:
+            # Use smart search with OR logic for multiple SKUs
+            search_term = ' OR '.join(skus_to_fetch)
+            
+            endpoint = f"{self.config.base_url}/{self.config.company_id}/products"
+            params = {
+                'filter[smart]': search_term,
+                'include': 'defaultPrice,inventoryLines',
+                'per_page': min(100, len(skus_to_fetch) * 2)  # Fetch more than needed in case of partial matches
+            }
+            
+            self._track_api_call('products', f"batch_{len(skus_to_fetch)}")
+            
+            response = requests.get(
+                endpoint,
+                headers=self.session.headers,
+                params=params
+            )
+            
+            response.raise_for_status()
+            products = response.json()
+            
+            if not products:
+                self.logger.debug(f"No products found in batch search for: {skus_to_fetch}")
+                # Cache negative results
+                for sku in skus_to_fetch:
+                    self._store_in_cache('products', sku, None)
+                    results[sku] = None
+                return results
+            
+            # Map products back to SKUs
+            for sku in skus_to_fetch:
+                found_product = None
+                
+                # Look for exact SKU match
+                for product in products:
+                    if product.get('sku') == sku:
+                        found_product = product
+                        break
+                
+                if found_product:
+                    product_id = found_product.get('productId')
+                    product_link = f"https://app.inflowinventory.com/products/{product_id}"
+                    self.logger.info(f"Found product: {found_product.get('name')} (SKU: {sku}) - View in inFlow: {product_link}")
+                    # Cache successful result
+                    self._store_in_cache('products', sku, found_product)
+                    results[sku] = found_product
+                else:
+                    self.logger.warning(f"No exact SKU match found for: {sku}")
+                    # Cache negative result
+                    self._store_in_cache('products', sku, None)
+                    results[sku] = None
+            
+            return results
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error in batch product search: {str(e)}")
+            if hasattr(e.response, 'text'):
+                self.logger.error(f"Response: {e.response.text}")
+            
+            # Fall back to individual lookups for remaining SKUs
+            self.logger.info(f"Falling back to individual lookups for {len(skus_to_fetch)} SKUs")
+            for sku in skus_to_fetch:
+                results[sku] = self.find_product_by_sku(sku)
+            
+            return results

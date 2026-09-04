@@ -66,10 +66,6 @@ class LocalConfig:
         """Load configuration from environment variables."""
         config = {}
         
-        # Required Gmail settings
-        config['gmail_username'] = os.getenv('GMAIL_USERNAME')
-        config['gmail_password'] = os.getenv('GMAIL_PASSWORD')
-        
         # Required inFlow settings
         config['inflow_api_key'] = os.getenv('INFLOW_API_KEY')
         config['inflow_company_id'] = os.getenv('INFLOW_COMPANY_ID')
@@ -92,8 +88,6 @@ class LocalConfig:
     def _validate_config(self):
         """Validate that required configuration is present."""
         required_fields = [
-            'gmail_username',
-            'gmail_password',
             'inflow_api_key',
             'inflow_company_id'
         ]
@@ -108,17 +102,8 @@ class LocalConfig:
             for field in missing_fields:
                 self.logger.error(f"  - {field}")
             
-            self.logger.error("\nPlease set these environment variables or create a .env.local file")
-            self.logger.error("See env.local.example for the required format")
-            
-            if 'GMAIL_PASSWORD' in missing_fields:
-                self.logger.error("\nIMPORTANT: For Gmail, you must use an App Password, not your regular password!")
-                self.logger.error("To create an App Password:")
-                self.logger.error("1. Go to https://myaccount.google.com/")
-                self.logger.error("2. Navigate to Security > 2-Step Verification")
-                self.logger.error("3. Scroll down to 'App passwords'")
-                self.logger.error("4. Generate a password for 'Mail' application")
-                self.logger.error("5. Use that 16-character password as GMAIL_PASSWORD")
+            self.logger.error("\nPlease set these environment variables or create a .env file")
+            self.logger.error("See .env.example for the required format")
             
             raise ValueError(f"Missing required configuration: {', '.join(missing_fields)}")
         
@@ -161,7 +146,7 @@ class LocalConfig:
         """
         self.logger.info("Current Configuration:")
         
-        secret_keys = ['gmail_password', 'inflow_api_key']
+        secret_keys = ['inflow_api_key']
         
         for key, value in sorted(self.config.items()):
             if mask_secrets and key in secret_keys:

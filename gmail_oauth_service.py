@@ -95,26 +95,53 @@ class GmailOAuthService:
         self.service = build('gmail', 'v1', credentials=creds)
         self.logger.info("Gmail OAuth service initialized successfully")
     
-    def search_order_emails(self) -> List[str]:
-        """Search for order emails from today using Gmail API.
-        Uses Eastern Time to determine 'today'.
+    def search_order_emails(self, since_timestamp: Optional[datetime] = None, since_days: Optional[int] = None) -> List[str]:
+        """Search for order emails using Gmail API.
+        
+        Args:
+            since_timestamp (Optional[datetime]): Only return emails received after this timestamp.
+                                                If None, searches from today (legacy behavior).
+            since_days (Optional[int]): Legacy parameter - search emails from X days ago.
+                                      Ignored if since_timestamp is provided.
         
         Returns:
-            List[str]: List of Gmail message IDs from today
+            List[str]: List of Gmail message IDs matching the criteria
         """
         try:
-            # Get today's date in Eastern Time
-            from datetime import datetime
             import pytz
             
             eastern = pytz.timezone('US/Eastern')
-            today_eastern = datetime.now(eastern).date()
-            today_str = today_eastern.strftime("%Y/%m/%d")
             
-            # Gmail API search query for today only
-            query = f'subject:"Order Placed" after:{today_str}'
-            
-            self.logger.info(f"Searching for emails with query: {query} (Eastern Time)")
+            if since_timestamp is not None:
+                # Convert timestamp to Eastern Time for Gmail search
+                if since_timestamp.tzinfo is None:
+                    # Assume UTC if no timezone info
+                    since_timestamp = since_timestamp.replace(tzinfo=timezone.utc)
+                
+                since_eastern = since_timestamp.astimezone(eastern)
+                # Gmail search format: YYYY/MM/DD HH:MM:SS (24-hour format)
+                since_str = since_eastern.strftime("%Y/%m/%d %H:%M:%S")
+                query = f'subject:"Order Placed" after:"{since_str}"'
+                
+                self.logger.info(f"Searching for emails with query: {query} (Eastern Time)")
+                self.logger.info(f"Only processing emails received after program startup: {since_eastern.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                
+            elif since_days is not None:
+                # Legacy behavior: search from X days ago
+                from datetime import timedelta
+                days_ago = datetime.now(eastern) - timedelta(days=since_days)
+                days_ago_str = days_ago.strftime("%Y/%m/%d")
+                query = f'subject:"Order Placed" after:{days_ago_str}'
+                
+                self.logger.info(f"Searching for emails with query: {query} (Eastern Time)")
+                
+            else:
+                # Default behavior: search from today
+                today_eastern = datetime.now(eastern).date()
+                today_str = today_eastern.strftime("%Y/%m/%d")
+                query = f'subject:"Order Placed" after:{today_str}'
+                
+                self.logger.info(f"Searching for emails with query: {query} (Eastern Time)")
             
             # Search for messages
             results = self.service.users().messages().list(
@@ -123,7 +150,11 @@ class GmailOAuthService:
             ).execute()
             
             messages = results.get('messages', [])
-            self.logger.info(f"Found {len(messages)} order emails from today ({today_str} Eastern)")
+            
+            if since_timestamp is not None:
+                self.logger.info(f"Found {len(messages)} order emails since program startup")
+            else:
+                self.logger.info(f"Found {len(messages)} order emails from today")
             
             return [msg['id'] for msg in messages]
             

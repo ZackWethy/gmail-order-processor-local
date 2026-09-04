@@ -41,6 +41,8 @@ class OAuthOrderMonitor:
         
         # Runtime tracking
         self.running = False
+        self.shutdown_requested = False  # More immediate shutdown flag
+        self.startup_time = None  # Track when monitoring starts for email filtering
         self.stats = {
             'start_time': None,
             'emails_checked': 0,
@@ -71,8 +73,15 @@ class OAuthOrderMonitor:
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully."""
-        self.logger.info(f"Received signal {signum}, shutting down gracefully...")
-        self.running = False
+        if not self.shutdown_requested:
+            self.logger.info(f"Received signal {signum}, shutting down gracefully...")
+            self.logger.info("Will finish processing current operation and exit...")
+            self.shutdown_requested = True
+            self.running = False
+        else:
+            # Second signal forces immediate exit
+            self.logger.warning("Received second shutdown signal, forcing immediate exit...")
+            sys.exit(0)
     
     def _initialize_services(self):
         """Initialize Gmail and inFlow services."""
@@ -109,7 +118,7 @@ class OAuthOrderMonitor:
         self.logger.info(f"  - Authentication: OAuth 2.0")
         self.logger.info(f"  - Poll Interval: {self.config['poll_interval']} seconds")
         self.logger.info(f"  - Storage Directory: {self.config['storage_dir']}")
-        self.logger.info(f"  - Email Search: Today only (Eastern Time)")
+        self.logger.info(f"  - Email Search: Only new emails after startup (Eastern Time)")
         self.logger.info(f"  - Auto-shutdown: {self.auto_shutdown_hours} hours of inactivity")
         
         try:
@@ -118,13 +127,20 @@ class OAuthOrderMonitor:
             
             # Start monitoring
             self.running = True
-            self.stats['start_time'] = datetime.now(timezone.utc)
+            self.startup_time = datetime.now(timezone.utc)
+            self.stats['start_time'] = self.startup_time
             
             self.logger.info("Starting email monitoring loop...")
+            self.logger.info(f"📧 Email Filter: Only processing emails received after {self.startup_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
             self.logger.info("Press Ctrl+C to stop")
             
-            while self.running:
+            while self.running and not self.shutdown_requested:
                 try:
+                    # Check for shutdown first
+                    if self.shutdown_requested:
+                        self.logger.info("Shutdown requested, stopping monitoring loop...")
+                        break
+                    
                     # Check for auto-shutdown condition
                     if self._should_auto_shutdown():
                         self.logger.info(f"Auto-shutdown triggered after {self.auto_shutdown_hours} hours of no email processing activity")
@@ -154,7 +170,8 @@ class OAuthOrderMonitor:
     def _interruptible_sleep(self, duration: int):
         """Sleep for duration seconds, but check for interruption every second."""
         for _ in range(duration):
-            if not self.running:
+            if not self.running or self.shutdown_requested:
+                self.logger.debug("Sleep interrupted by shutdown request")
                 break
             time.sleep(1)
     
@@ -190,8 +207,8 @@ class OAuthOrderMonitor:
         try:
             self.logger.debug(f"[{exec_id}] Checking for new order emails...")
             
-            # Search for order emails using OAuth (today only, Eastern Time)
-            message_ids = self.gmail_service.search_order_emails()
+            # Search for order emails using OAuth (only emails received after startup)
+            message_ids = self.gmail_service.search_order_emails(since_timestamp=self.startup_time)
             
             self.stats['emails_checked'] += len(message_ids)
             
@@ -204,11 +221,23 @@ class OAuthOrderMonitor:
             # Process each email
             new_orders = 0
             for message_id in message_ids:
+                # Check for shutdown between each email
+                if self.shutdown_requested:
+                    self.logger.info(f"[{exec_id}] Shutdown requested, stopping email processing...")
+                    break
+                    
                 try:
                     # Get email content using OAuth
                     email_message = self.gmail_service.get_message_content(message_id)
                     if not email_message:
                         continue
+                    
+                    # Double-check: ensure email was received after startup (safety check)
+                    if self.startup_time and email_message.timestamp:
+                        email_time = datetime.fromtimestamp(email_message.timestamp, tz=timezone.utc)
+                        if email_time < self.startup_time:
+                            self.logger.debug(f"[{exec_id}] Email {email_message.message_id} received before startup ({email_time} < {self.startup_time}), skipping")
+                            continue
                     
                     # Check if already processed
                     if self.storage.is_email_processed(email_message.message_id):
@@ -217,6 +246,10 @@ class OAuthOrderMonitor:
                     
                     # Update activity time - we found a new email to process
                     self._update_activity_time("new email found")
+                    
+                    # Log when we find a new email that meets our criteria
+                    email_time = datetime.fromtimestamp(email_message.timestamp, tz=timezone.utc)
+                    self.logger.info(f"[{exec_id}] 📧 Processing new email: {email_message.subject} (received: {email_time.strftime('%Y-%m-%d %H:%M:%S UTC')})")
                     
                     # Process the order
                     result = self._process_single_email(email_message, exec_id)
@@ -287,19 +320,49 @@ class OAuthOrderMonitor:
                 self.logger.error(f"[{exec_id}] Customer not found: {shipping_company}")
                 return None
             
-            # Create order items
+            # Batch lookup all products first to improve efficiency
+            skus_to_lookup = [item['sku'] for item in order_data['items']]
+            self.logger.debug(f"[{exec_id}] Batch lookup for {len(skus_to_lookup)} products: {skus_to_lookup}")
+            
+            # Check for shutdown before batch operation
+            if self.shutdown_requested:
+                self.logger.info(f"[{exec_id}] Shutdown requested before product lookup")
+                return None
+            
+            # Use optimized batch lookup if available, otherwise fall back to individual lookups
+            if hasattr(self.inflow_client, 'find_products_by_skus_batch') and len(skus_to_lookup) > 1:
+                products_map = self.inflow_client.find_products_by_skus_batch(skus_to_lookup)
+                # Log missing products from batch result
+                for sku in skus_to_lookup:
+                    if not products_map.get(sku):
+                        self.logger.error(f"[{exec_id}] Product not found: {sku}")
+            else:
+                # Fall back to individual lookups
+                products_map = {}
+                for sku in skus_to_lookup:
+                    # Check for shutdown between lookups
+                    if self.shutdown_requested:
+                        self.logger.info(f"[{exec_id}] Shutdown requested during product lookup")
+                        return None
+                        
+                    product = self.inflow_client.find_product_by_sku(sku)
+                    if product:
+                        products_map[sku] = product
+                    else:
+                        self.logger.error(f"[{exec_id}] Product not found: {sku}")
+            
+            # Create order items using the batched results
             order_items = []
             line_num = 100
             
             for item in order_data['items']:
                 sku = item['sku']
                 
-                # Find product
-                product = self.inflow_client.find_product_by_sku(sku)
-                if not product:
-                    self.logger.error(f"[{exec_id}] Product not found: {sku}")
-                    continue
+                # Use pre-fetched product data
+                if sku not in products_map:
+                    continue  # Product not found, already logged
                 
+                product = products_map[sku]
                 unit_price = item['unit_price']
                 if float(unit_price) == 0:
                     unit_price = product.get('defaultPrice', {}).get('unitPrice', '0')
@@ -357,6 +420,10 @@ class OAuthOrderMonitor:
             # Cleanup old locks
             if self.storage:
                 self.storage.cleanup_old_locks()
+            
+            # Log API and cache statistics
+            if self.inflow_client and hasattr(self.inflow_client, '_log_api_stats'):
+                self.inflow_client._log_api_stats()
             
             # Print final stats
             self._print_final_stats()

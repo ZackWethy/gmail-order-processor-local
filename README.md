@@ -2,7 +2,24 @@
 
 A local application that monitors Gmail for order emails and automatically creates sales orders in inFlow Inventory using OAuth 2.0 authentication.
 
-## 🚀 Quick Start
+## 👋 New to Code? Multiple Setup Options!
+
+Choose the setup method that works best for you:
+
+### 🎯 Option 1: Automated Setup (Easiest)
+```bash
+python3 quick_setup.py
+```
+**Perfect for beginners** - guides you through everything step-by-step.
+
+### 🖱️ Option 2: Platform Scripts
+**Mac/Linux**: Double-click `setup.sh` or run `./setup.sh`  
+**Windows**: Double-click `setup.bat`
+
+### 📖 Option 3: Manual Setup
+**Complete beginner?** See **[INSTALL.md](INSTALL.md)** for detailed step-by-step instructions including Python installation.
+
+## 🚀 Quick Start (For Developers)
 
 ### 1. Install Dependencies
 ```bash
@@ -51,15 +68,20 @@ python main.py
 gmail-order-processor-local/
 ├── main.py                    # Main application
 ├── setup_oauth_flow.py        # Interactive OAuth setup
+├── quick_setup.py             # Automated setup script
+├── setup.sh                   # Mac/Linux setup script
+├── setup.bat                  # Windows setup script
 ├── gmail_oauth_service.py     # Gmail OAuth service
 ├── local_storage.py           # Email tracking storage
 ├── local_config.py            # Configuration management
 ├── order_processor.py         # Email parsing
 ├── inflow_api.py              # inFlow API client
 ├── requirements.txt           # Dependencies
+├── README.md                  # This file
+├── INSTALL.md                 # Detailed beginner guide
 ├── .env.example               # Environment template
-├── credentials.json           # OAuth credentials (created during setup)
-├── token.json                 # OAuth tokens (created during setup)
+├── credentials.json           # OAuth credentials (created locally during setup, ignored by git)
+├── token.json                 # OAuth tokens (created locally during setup, ignored by git)
 └── local_data/                # Email tracking (created automatically)
 ```
 
@@ -86,7 +108,7 @@ Gmail authentication uses **OAuth 2.0** (no passwords required):
 
 ## 🔄 How It Works
 
-1. **Polls Gmail** every 60 seconds for today's emails with "Order Placed" in subject (Eastern Time)
+1. **Polls Gmail** every 60 seconds for new emails with "Order Placed" in the subject after the app starts
 2. **Parses order details** from email content
 3. **Finds customers/products** in inFlow using the API
 4. **Creates sales orders** in inFlow automatically
@@ -102,7 +124,7 @@ Gmail authentication uses **OAuth 2.0** (no passwords required):
 ## 📊 Monitoring
 
 - **Console logging**: Real-time activity display
-- **File logging**: Saved to `main.log`
+- **File logging**: Saved to `oauth_order_monitor.log`
 - **Email tracking**: Stored in `local_data/processed_emails.json`
 - **Duplicate prevention**: Automatic via email ID tracking
 
